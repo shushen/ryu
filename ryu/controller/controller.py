@@ -45,6 +45,9 @@ from ryu.controller import ofp_event
 
 from ryu.lib.dpid import dpid_to_str
 
+import struct
+import time
+
 LOG = logging.getLogger('ryu.controller.controller')
 
 CONF = cfg.CONF
@@ -113,6 +116,7 @@ class Datapath(ofproto_protocol.ProtocolDesc):
         self.socket.setsockopt(IPPROTO_TCP, TCP_NODELAY, 1)
         self.address = address
         self.is_active = True
+        self.buf = bytearray()
 
         # The limit is arbitrary. We need to limit queue size to
         # prevent it from eating memory up
@@ -211,9 +215,42 @@ class Datapath(ofproto_protocol.ProtocolDesc):
         assert isinstance(msg, self.ofproto_parser.MsgBase)
         if msg.xid is None:
             self.set_xid(msg)
-        msg.serialize()
-        # LOG.debug('send_msg %s', msg)
-        self.send(msg.buf)
+        if msg.cls_msg_type == 14:
+            if len(self.buf) == 0:
+                msg.serialize()
+                self.buf += msg.buf
+		self.transID = struct.unpack_from('!L', msg.buf, 4)[0]
+                self.ip = struct.unpack_from('!L', msg.buf, 56)[0]
+                self.cookie = struct.unpack_from('!L', msg.buf, 8)[0]
+                self.send(msg.buf)
+            nf = 500000
+            LOG.error('Pushing %d flows', nf)
+            start_time=time.time()
+            lap_time=start_time
+	    for x in xrange(1, nf):
+                self.transID += 1
+                self.ip += 1
+                self.cookie += 1
+                buf = bytearray()
+                buf[:] = self.buf
+            #    LOG.debug('new transID = %x, ip=%x', self.transID, self.ip)
+                struct.pack_into('!L', buf, 4, self.transID)
+                struct.pack_into('!L', buf, 8, self.cookie)
+                struct.pack_into('!L', buf, 56, self.ip)
+                #LOG.debug('new transID = %s, ip=%s', struct.pack('!L', self.transID), struct.pack('!L', self.ip))
+                self.send(buf)
+             #   LOG.debug('send_msg tranID=%x, IP=%x', struct.unpack_from('!L', self.buf, 4)[0], struct.unpack_from('!L', self.buf, 56)[0])
+                if x%10000 == 0:
+                     duration = time.time() - lap_time
+                     LOG.error('10000 flows In %f seconds, rate = %f', duration, 10000/duration)
+                     lap_time = time.time()
+            duration = time.time() - start_time
+            LOG.error('In %f seconds', duration)
+            LOG.error('Rate is %f flows/second', (nf)/duration)
+
+        else:
+            msg.serialize()
+            self.send(msg.buf)
 
     def serve(self):
         send_thr = hub.spawn(self._send_loop)
